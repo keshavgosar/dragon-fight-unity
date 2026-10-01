@@ -16,7 +16,7 @@ public class DragonCombat : MonoBehaviour
     [Header("Abilities")]
     public Ability fire = new Ability { name = "Fire Breath", damage = 36f, cooldown = 5f, range = 8f, coneAngle = 50f, windup = 0.35f, activeTime = 1.2f, recovery = 0.3f, animTrigger = "Fire" };
     public Ability tail = new Ability { name = "Tail Whip", damage = 22f, cooldown = 2.5f, range = 3.5f, coneAngle = 140f, windup = 0.35f, activeTime = 0.1f, recovery = 0.3f, knockback = 12f, animTrigger = "Tail" };
-    public Ability fly  = new Ability { name = "Sky Strike", damage = 40f, cooldown = 9f, range = 14f, windup = 0.5f, recovery = 0.5f, knockback = 16f, animTrigger = "Fly" };
+    public Ability fly = new Ability { name = "Sky Strike", damage = 40f, cooldown = 9f, range = 14f, windup = 0.5f, recovery = 0.5f, knockback = 16f, animTrigger = "Fly" };
 
     [Header("Fire tuning")]
     [SerializeField] int fireTicks = 6;
@@ -29,11 +29,16 @@ public class DragonCombat : MonoBehaviour
     [SerializeField] float landOffset = 1.5f;
     [SerializeField] float slamShake = 0.4f;
 
+    [Header("Tail whip (procedural spin, no tail clip needed)")]
+    [SerializeField] bool spinForTail = true;
+    [SerializeField] float spinDuration = 0.5f;
+
     DragonMotor motor;
     Health health;
     Ability[] abilities;
     readonly HashSet<string> triggers = new HashSet<string>();
     float modelBaseY;
+    Quaternion modelBaseRot = Quaternion.identity;
     bool busy;
 
     public Ability[] Abilities => abilities ??= new[] { fire, tail, fly };
@@ -44,10 +49,19 @@ public class DragonCombat : MonoBehaviour
     {
         motor = GetComponent<DragonMotor>();
         health = GetComponent<Health>();
-        if (model != null) modelBaseY = model.localPosition.y;
+
+        if (model != null)
+        {
+            modelBaseY = model.localPosition.y; modelBaseRot = model.localRotation;
+        }
+
         if (animator != null)
             foreach (var p in animator.parameters)
                 if (p.type == AnimatorControllerParameterType.Trigger) triggers.Add(p.name);
+
+        foreach (var ab in Abilities)
+            if (ab.vfx != null && !ab.vfx.gameObject.scene.IsValid())
+                Debug.LogWarning($"{name}: '{ab.name}' VFX is a prefab asset, not a scene object. Drag an instance from the Hierarchy into the slot instead.", this);
         health.Died += OnDied;
     }
 
@@ -63,7 +77,7 @@ public class DragonCombat : MonoBehaviour
         {
             case Fire: StartCoroutine(FireRoutine(a)); break;
             case Tail: StartCoroutine(TailRoutine(a)); break;
-            default:   StartCoroutine(FlyRoutine(a));  break;
+            default: StartCoroutine(FlyRoutine(a)); break;
         }
         return true;
     }
@@ -96,7 +110,31 @@ public class DragonCombat : MonoBehaviour
         yield return Wait(a.windup);
         if (a.vfx) a.vfx.Play();
         Sfx.Play(a.sfx);
-        HitCone(a.damage, a.range, a.coneAngle, a.knockback);
+
+        if (spinForTail && model != null)
+        {
+            float t = 0f;
+            bool hit = false;
+            while (t < spinDuration)
+            {
+                t += Time.deltaTime;
+                float k = Mathf.Clamp01(t / spinDuration);
+                model.localRotation = Quaternion.AngleAxis(360f * Mathf.SmoothStep(0f, 1f, k), Vector3.up) * modelBaseRot;
+                if (!hit && k >= 0.5f)
+                {
+                    hit = true;
+                    HitCone(a.damage, a.range, 360f, a.knockback);
+                }
+                yield return null;
+            }
+            model.localRotation = modelBaseRot;
+        }
+        else
+        {
+            HitCone(a.damage, a.range, a.coneAngle, a.knockback);
+        }
+
+        if (a.vfx) a.vfx.Stop();
         yield return Wait(a.activeTime + a.recovery);
         End();
     }
@@ -128,6 +166,7 @@ public class DragonCombat : MonoBehaviour
         if (a.vfx) a.vfx.Stop();
 
         // 3. land + slam
+        if (animator != null && triggers.Contains("Land")) animator.SetTrigger("Land");
         yield return MoveModelY(modelBaseY + flyHeight, modelBaseY, landTime);
         motor.SetKinematic(false);
         HitRadius(a.damage, slamRadius, a.knockback);
@@ -223,6 +262,9 @@ public class DragonCombat : MonoBehaviour
         motor.Locked = true;
         motor.Move(Vector3.zero);
         SetModelY(modelBaseY);
+
+        if (model != null) model.localRotation = modelBaseRot;
+
         foreach (var a in Abilities) if (a.vfx) a.vfx.Stop();
         if (animator != null && triggers.Contains("Die")) animator.SetTrigger("Die");
     }
